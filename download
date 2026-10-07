@@ -1,0 +1,147 @@
+#include "mainwindow.h"
+#include "ui_mainwindow.h"
+
+#include <QTableWidgetItem>
+#include <QHeaderView>
+#include <QDateTime>
+#include <QGraphicsPixmapItem>
+#include <QPixmap>
+#include <cstdlib>
+#include <ctime>
+
+MainWindow::MainWindow(QWidget *parent)
+    : QMainWindow(parent)
+    , ui(new Ui::MainWindow)
+{
+    ui->setupUi(this);
+
+    // чтобы при каждом запуске числа были разные
+    srand(time(0));
+
+    // сцена 600 на 400
+    scene = new QGraphicsScene(0, 0, 600, 400, this);
+    ui->graphicsView->setScene(scene);
+
+    // настройка таблицы: 4 колонки, 6 строк
+    ui->tableWidget->setColumnCount(4);
+    ui->tableWidget->setHorizontalHeaderLabels({"ID", "Заряд", "Статус", "Координаты"});
+    ui->tableWidget->setRowCount(6);
+    ui->tableWidget->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    ui->tableWidget->verticalHeader()->setVisible(false);
+    ui->tableWidget->setEditTriggers(QAbstractItemView::NoEditTriggers);
+
+    // звук отключения БПЛА
+    offlineSound = new QSoundEffect(this);
+    offlineSound->setSource(QUrl("qrc:/offline.wav"));
+
+    createFleet();
+
+    // таймер: каждые 2 секунды вызывается updateFleet
+    timer = new QTimer(this);
+    connect(timer, &QTimer::timeout, this, &MainWindow::updateFleet);
+    timer->start(2000);
+
+    updateFleet();   // первый раз заполняем таблицу сразу
+}
+
+MainWindow::~MainWindow()
+{
+    delete ui;
+}
+
+void MainWindow::createFleet()
+{
+    scene->clear();   // удаляем всё со сцены
+    fleet.clear();    // очищаем список
+
+    // рамка карты
+    scene->addRect(0, 0, 600, 400, QPen(Qt::gray));
+
+    for (int i = 0; i < 6; i++) {
+        DroneInfo d;
+        d.id = i + 1;
+        d.battery = 30 + rand() % 70;         // от 30 до 99 %
+        d.online = (rand() % 10 > 1);          // примерно 80% шанс что online
+        d.pos = QPointF(rand() % 600, rand() % 400);
+        // цветной овал под картинкой - показывает статус
+        d.item = scene->addEllipse(0, 0, 72, 44, QPen(Qt::NoPen));
+        // картинка беспилотника, привязана к овалу и двигается вместе с ним
+        QGraphicsPixmapItem *pic = new QGraphicsPixmapItem(QPixmap(":/drone.png"), d.item);
+        pic->setPos(4, 5);
+        fleet.append(d);
+    }
+}
+
+void MainWindow::updateFleet()
+{
+    for (int i = 0; i < fleet.size(); i++) {
+        DroneInfo &d = fleet[i];   // & - чтобы менять сам элемент, а не копию
+
+        // имитация телеметрии: заряд падает, БПЛА немного смещается
+        if (d.online) {
+            d.battery -= rand() % 5;
+            if (d.battery <= 0) {
+                d.battery = 0;
+                d.online = false;
+                offlineSound->play();   // БПЛА отключился - играем звук
+            }
+            d.pos += QPointF(rand() % 20 - 10, rand() % 20 - 10);
+
+            // не даём улететь за карту
+            d.pos.setX(qBound(0.0, d.pos.x(), 600.0));
+            d.pos.setY(qBound(0.0, d.pos.y(), 400.0));
+        }
+
+        // заполняем строку таблицы
+        ui->tableWidget->setItem(i, 0, new QTableWidgetItem(QString::number(d.id)));
+        ui->tableWidget->setItem(i, 1, new QTableWidgetItem(QString::number(d.battery) + "%"));
+        ui->tableWidget->setItem(i, 2, new QTableWidgetItem(d.online ? "Online" : "Offline"));
+        ui->tableWidget->setItem(i, 3, new QTableWidgetItem(
+            QString::number(d.pos.x(), 'f', 0) + ", " + QString::number(d.pos.y(), 'f', 0)));
+
+        // цвет строки
+        QColor color;
+        if (!d.online)
+            color = QColor(255, 200, 200);   // красная - offline
+        else if (d.battery < 20)
+            color = QColor(255, 255, 200);   // жёлтая - мало заряда
+        else
+            color = QColor(200, 255, 200);   // зелёная - всё ок
+
+        for (int c = 0; c < 4; c++)
+            ui->tableWidget->item(i, c)->setBackground(color);
+
+        // беспилотник на карте (-36 и -22 чтобы центр был в pos)
+        d.item->setPos(d.pos.x() - 36, d.pos.y() - 22);
+
+        // полупрозрачный цвет, чтобы картинку было видно
+        if (!d.online)
+            d.item->setBrush(QColor(255, 0, 0, 150));
+        else if (d.battery < 20)
+            d.item->setBrush(QColor(255, 255, 0, 150));
+        else
+            d.item->setBrush(QColor(0, 255, 0, 150));
+    }
+
+    ui->labelUpdated->setText("Обновлено: " +
+        QDateTime::currentDateTime().toString("hh:mm:ss"));
+}
+
+void MainWindow::on_btnPause_clicked()
+{
+    if (timer->isActive()) {
+        timer->stop();
+        ui->btnPause->setText("Продолжить");
+    } else {
+        timer->start(2000);
+        ui->btnPause->setText("Пауза");
+    }
+}
+
+void MainWindow::on_btnReset_clicked()
+{
+    createFleet();       // новые 6 БПЛА
+    updateFleet();       // сразу показать их
+    timer->start(2000);
+    ui->btnPause->setText("Пауза");
+}
